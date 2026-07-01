@@ -402,7 +402,7 @@ def _last(arr):
 def fetch_kline_for_score(code):
     """拉取单只股票近200日 K 线（用于技术指标计算）"""
     try:
-        bs_code = code
+        bs_code = code[:2] + "." + code[2:]  # sz688578 → sz.688578
         bs.login()
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=250)).strftime("%Y-%m-%d")
@@ -718,17 +718,22 @@ def score_stock(s, mode="long"):
     funda_score = min(funda_score, 15)
 
     # =========== 六、估值因子 (10分) ===========
-    val_score = 0.0
+    val_score = 2.0  # 基准分：避免全场归零
     if pe > 0:
         if pe < 10:
             val_score += 5
         elif pe < 18:
             val_score += 4
         elif pe < 25:
-            val_score += 2
+            val_score += 3
         elif pe < 50:
             val_score += 1
         else:
+            val_score -= 1
+        # 极端PE大幅扣分
+        if pe > 150:
+            val_score -= 3
+        elif pe > 80:
             val_score -= 1
     if pb and pb > 0:
         if pb < 1:
@@ -739,6 +744,8 @@ def score_stock(s, mode="long"):
             val_score += 1
         elif pb > 10:
             val_score -= 1
+        if pb > 30:
+            val_score -= 2  # 严重高估
     val_score = max(0, min(val_score, 10))
 
     # =========== 七、市场情绪因子 (10分) ===========
@@ -978,6 +985,7 @@ def gen_recommend_stocks():
         s["_score_short"] = score_stock(s, mode="short")
 
     # ===== 长期推荐：价值投资导向 =====
+    # Phase 1: 宽松初筛，基础基本面过滤，让更多标的进入候选池
     long_candidates = []
     for s in all_stocks:
         pe = s.get("pe")
@@ -987,19 +995,18 @@ def gen_recommend_stocks():
         long_total = s["_score_long"].get("total", 0)
         fund_score = s["_score_long"].get("factors", {}).get("fundamental", 0)
         val_score = s["_score_long"].get("factors", {}).get("valuation", 0)
-        # 升级：允许高基本面(>10)+高估值(>7)的标的以稍低总分(>=42)入围
-        if (long_total >= 45
+        # 宽松初筛：只要有基本面和估值就进入候选
+        if (long_total >= 18
                 and pe is not None and pe > 0
                 and pb is not None and pb > 0
-                and mcap is not None and mcap > 2_000_000_000
+                and mcap is not None and mcap > 1_000_000_000
                 and roe is not None and roe > 0):
             long_candidates.append(s)
-        elif (long_total >= 42
-                and fund_score >= 10
-                and val_score >= 7
+        elif (fund_score >= 5
+                and val_score >= 2
                 and pe is not None and pe > 0
                 and pb is not None and pb > 0
-                and mcap is not None and mcap > 2_000_000_000
+                and mcap is not None and mcap > 1_000_000_000
                 and roe is not None and roe > 0):
             long_candidates.append(s)
 
@@ -1014,9 +1021,9 @@ def gen_recommend_stocks():
         reverse=True
     )
 
-    # Phase 2: 对长期top 20拉K线做技术指标评分
-    long_top20 = long_candidates[:20]
-    for s in long_top20:
+    # Phase 2: 对长期top 50拉K线做技术指标评分（扩大候选池）
+    long_top = long_candidates[:50]
+    for s in long_top:
         code = s.get("code", "")
         if code:
             kl = fetch_kline_for_score(code)
@@ -1024,8 +1031,34 @@ def gen_recommend_stocks():
                 s["_tech"] = compute_tech_factors(kl)
                 s["_score_long"] = score_stock(s, mode="long")  # 用 K 线数据重新评分
 
-    long_candidates = long_top20  # 最终在 top20 中按新评分排序
-    long_candidates.sort(
+    # Phase 3: K线强化后重新过滤（降档阈值，确保K线正常后有足够推荐）
+    long_final = []
+    for s in long_top:
+        pe = s.get("pe")
+        pb = s.get("pb")
+        mcap = s.get("market_cap")
+        roe = s.get("roe")
+        long_total = s["_score_long"].get("total", 0)
+        fund_score = s["_score_long"].get("factors", {}).get("fundamental", 0)
+        val_score = s["_score_long"].get("factors", {}).get("valuation", 0)
+        # 主通道：总分>=36（K线正常后技术因子有分）
+        if (long_total >= 36
+                and pe is not None and pe > 0
+                and pb is not None and pb > 0
+                and mcap is not None and mcap > 1_000_000_000
+                and roe is not None and roe > 0):
+            long_final.append(s)
+        # 备选通道：K线拉取失败的，用Phase1评分兜底
+        elif (long_total >= 25
+                and fund_score >= 5
+                and val_score >= 3
+                and pe is not None and pe > 0
+                and pb is not None and pb > 0
+                and mcap is not None and mcap > 1_000_000_000
+                and roe is not None and roe > 0):
+            long_final.append(s)
+
+    long_final.sort(
         key=lambda x: (
             x["_score_long"].get("total", 0),
             x["_score_long"].get("factors", {}).get("fundamental", 0),
@@ -1035,9 +1068,10 @@ def gen_recommend_stocks():
         ),
         reverse=True
     )
-    long_term = long_candidates[:12]
+    long_term = long_final[:12]
 
     # ===== 短期推荐：动量/资金导向 =====
+    # Phase 1: 宽松初筛
     short_candidates = []
     for s in all_stocks:
         amount = s.get("amount")
@@ -1046,18 +1080,15 @@ def gen_recommend_stocks():
         short_total = s["_score_short"].get("total", 0)
         trend_score = s["_score_short"].get("factors", {}).get("trend", 0)
         fund_score = s["_score_short"].get("factors", {}).get("fund", 0)
-        # 升级：允许高趋势(>10)+高资金(>14)的标的以稍低总分(>=38)入围
-        if (short_total >= 40
-                and amount is not None and amount > 100_000_000
+        # 宽松初筛
+        if (short_total >= 15
+                and amount is not None and amount > 30_000_000
                 and turnover is not None and turnover > 0
                 and price is not None and price > 0):
             short_candidates.append(s)
-        elif (short_total >= 38
-                and trend_score >= 10
-                and fund_score >= 14
-                and amount is not None and amount > 100_000_000
-                and turnover is not None and turnover > 0
-                and price is not None and price > 0):
+        elif (turnover is not None and turnover > 0
+                and price is not None and price > 0
+                and amount is not None and amount > 30_000_000):
             short_candidates.append(s)
 
     short_candidates.sort(
@@ -1071,9 +1102,9 @@ def gen_recommend_stocks():
         reverse=True
     )
 
-    # Phase 2: 对短期top 25拉K线做技术指标评分
-    short_top25 = short_candidates[:25]
-    for s in short_top25:
+    # Phase 2: 对短期top 60拉K线做技术指标评分（扩大候选池）
+    short_top = short_candidates[:60]
+    for s in short_top:
         code = s.get("code", "")
         if code:
             kl = fetch_kline_for_score(code)
@@ -1081,8 +1112,31 @@ def gen_recommend_stocks():
                 s["_tech"] = compute_tech_factors(kl)
                 s["_score_short"] = score_stock(s, mode="short")
 
-    short_candidates = short_top25
-    short_candidates.sort(
+    # Phase 3: K线强化后重新过滤（降档阈值）
+    short_final = []
+    for s in short_top:
+        amount = s.get("amount")
+        turnover = s.get("turnover_rate")
+        price = s.get("price")
+        short_total = s["_score_short"].get("total", 0)
+        trend_score = s["_score_short"].get("factors", {}).get("trend", 0)
+        fund_score = s["_score_short"].get("factors", {}).get("fund", 0)
+        # 主通道：总分>=32
+        if (short_total >= 32
+                and amount is not None and amount > 50_000_000
+                and turnover is not None and turnover > 0
+                and price is not None and price > 0):
+            short_final.append(s)
+        # 备选通道：K线拉取失败的兜底
+        elif (short_total >= 25
+                and trend_score >= 3
+                and fund_score >= 8
+                and amount is not None and amount > 50_000_000
+                and turnover is not None and turnover > 0
+                and price is not None and price > 0):
+            short_final.append(s)
+
+    short_final.sort(
         key=lambda x: (
             x["_score_short"].get("total", 0),
             x["_score_short"].get("factors", {}).get("momentum", 0),
@@ -1095,7 +1149,7 @@ def gen_recommend_stocks():
 
     # 去重
     long_codes = {s["code"] for s in long_term}
-    short_term = [s for s in short_candidates if s["code"] not in long_codes][:12]
+    short_term = [s for s in short_final if s["code"] not in long_codes][:12]
 
     # 附加交易价格 & 评分（向后兼容）
     for s in long_term:
