@@ -1416,6 +1416,10 @@ HTML_TEMPLATE = r"""
         padding: 12px 14px; cursor: pointer; transition: all 0.15s;
     }
     .rec-card:hover { border-color: #58a6ff; box-shadow: 0 2px 12px rgba(88,166,255,0.1); }
+    .rec-card-add { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; border: 1px solid #58a6ff44; background: #1a1d2e; color: #58a6ff; font-size: 16px; line-height: 22px; text-align: center; cursor: pointer; padding: 0; opacity: 0; transition: opacity 0.2s; }
+    .rec-card:hover .rec-card-add { opacity: 1; }
+    .rec-card-add:hover { background: #58a6ff33; border-color: #58a6ff; }
+    .rec-card-add.in-watchlist { color: #f0883e; border-color: #f0883e66; background: #f0883e22; }
     .rec-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
     .rec-card-name { font-size: 14px; font-weight: 600; }
     .rec-card-code { font-size: 11px; color: var(--text-secondary); }
@@ -1514,10 +1518,49 @@ HTML_TEMPLATE = r"""
         background: rgba(0,0,0,0.4); z-index: 199;
     }
 
+    .watchlist-section {
+        margin: 0 24px 16px;
+    }
+    .watchlist-panel {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    .watchlist-header {
+        padding: 10px 16px; font-size: 14px; font-weight: 600;
+        border-bottom: 1px solid var(--border);
+        display: flex; align-items: center; justify-content: space-between;
+        background: var(--card-bg); position: sticky; top: 0; z-index: 1;
+    }
+    .watchlist-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 8px; padding: 10px 14px; max-height: 320px; overflow-y: auto;
+    }
+    .watchlist-card {
+        background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+        padding: 10px 12px; display: flex; align-items: center; gap: 8px;
+        cursor: pointer; transition: border-color 0.15s;
+    }
+    .watchlist-card:hover { border-color: #58a6ff; }
+    .watchlist-card-info { flex: 1; min-width: 0; }
+    .watchlist-card-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .watchlist-card-code { font-size: 10px; color: var(--text-secondary); }
+    .watchlist-card-remove {
+        width: 20px; height: 20px; border-radius: 50%; border: 1px solid #f8514944;
+        background: transparent; color: #f85149; font-size: 12px; line-height: 18px;
+        text-align: center; cursor: pointer; flex-shrink: 0; padding: 0;
+        opacity: 0; transition: opacity 0.15s;
+    }
+    .watchlist-card:hover .watchlist-card-remove { opacity: 1; }
+    .watchlist-card-remove:hover { background: #f8514922; }
+    .watchlist-empty { text-align: center; padding: 20px; color: var(--text-secondary); font-size: 12px; }
+
     @media (max-width: 900px) {
         .trading-section { flex-direction: column; }
         .recommend-section { flex-direction: column; }
         .rec-card-list { grid-template-columns: 1fr; max-height: 320px; }
+        .watchlist-grid { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 768px) {
@@ -1612,6 +1655,17 @@ HTML_TEMPLATE = r"""
         <div class="backtest-results" id="btResults" style="padding:12px 16px;max-height:500px;overflow-y:auto;">
             <div class="bt-empty" style="text-align:center;padding:30px;color:var(--text-secondary);font-size:12px;">选择持仓股票并点击运行回测，查看AI策略的历史表现</div>
         </div>
+    </div>
+</div>
+
+<!-- 自选股板块 -->
+<div class="watchlist-section" id="watchlistSection">
+    <div class="watchlist-panel">
+        <div class="watchlist-header">
+            <span>⭐ 我的自选</span>
+            <span style="font-size:11px;color:var(--text-secondary);" id="wlCount"></span>
+        </div>
+        <div class="watchlist-grid" id="watchlistGrid"></div>
     </div>
 </div>
 
@@ -2019,7 +2073,9 @@ HTML_TEMPLATE = r"""
                 </div>`;
             }
 
-            return `<div class="rec-card" data-code="${codeDisplay}">
+            const inWatchlist = isInWatchlist(codeDisplay);
+            return `<div class="rec-card" data-code="${codeDisplay}" style="position:relative;">
+                <button class="rec-card-add ${inWatchlist ? 'in-watchlist' : ''}" data-code="${codeDisplay}" title="${inWatchlist ? '已加入自选' : '加入自选'}">${inWatchlist ? '✓' : '+'}</button>
                 <div class="rec-card-top">
                     <span class="rec-card-name">${d.display_name || d.name || '--'}</span>
                     <span class="rec-card-code">${codeDisplay}</span>
@@ -2037,8 +2093,14 @@ HTML_TEMPLATE = r"""
         }).join('');
     }
 
-    // 推荐面板点击 - 显示详情
+    // 推荐面板点击 - 显示详情 / 加自选
     document.getElementById('longList').addEventListener('click', function(e) {
+        const addBtn = e.target.closest('.rec-card-add');
+        if (addBtn) {
+            e.stopPropagation();
+            toggleWatchlist(addBtn.dataset.code);
+            return;
+        }
         const card = e.target.closest('.rec-card');
         if (!card) return;
         const code = card.dataset.code;
@@ -2046,6 +2108,12 @@ HTML_TEMPLATE = r"""
         if (stock) showDetail({ ...stock, type: 'stock', display_name: stock.name, code: stock.code });
     });
     document.getElementById('shortList').addEventListener('click', function(e) {
+        const addBtn = e.target.closest('.rec-card-add');
+        if (addBtn) {
+            e.stopPropagation();
+            toggleWatchlist(addBtn.dataset.code);
+            return;
+        }
         const card = e.target.closest('.rec-card');
         if (!card) return;
         const code = card.dataset.code;
@@ -2383,11 +2451,122 @@ HTML_TEMPLATE = r"""
         runBacktest();
     }
 
+    // ===== 自选股功能 =====
+    const WL_KEY = 'stock_watchlist_codes';
+
+    function getWatchlist() {
+        try {
+            return JSON.parse(localStorage.getItem(WL_KEY) || '[]');
+        } catch(e) { return []; }
+    }
+
+    function saveWatchlist(codes) {
+        localStorage.setItem(WL_KEY, JSON.stringify(codes));
+    }
+
+    function isInWatchlist(code) {
+        return getWatchlist().includes(code);
+    }
+
+    function toggleWatchlist(code) {
+        const codes = getWatchlist();
+        const idx = codes.indexOf(code);
+        if (idx >= 0) {
+            codes.splice(idx, 1);
+        } else {
+            codes.push(code);
+        }
+        saveWatchlist(codes);
+        // 刷新推荐面板的加号状态
+        if (recommendData) {
+            renderRecPanel('longList', recommendData.long_term || []);
+            renderRecPanel('shortList', recommendData.short_term || []);
+        }
+        renderWatchlist();
+    }
+
+    function renderWatchlist() {
+        const codes = getWatchlist();
+        const grid = document.getElementById('watchlistGrid');
+        const countEl = document.getElementById('wlCount');
+        countEl.textContent = codes.length > 0 ? '共 ' + codes.length + ' 只' : '';
+
+        if (codes.length === 0) {
+            grid.innerHTML = '<div class="watchlist-empty">📭 暂无自选股<br><span style="font-size:10px;">点击推荐面板中的 <b>+</b> 按钮添加</span></div>';
+            return;
+        }
+
+        // 尝试从 allData 或 recommendData 中找到价格
+        const allSources = [
+            ...(allData || []),
+            ...(recommendData.long_term || []),
+            ...(recommendData.short_term || []),
+        ];
+
+        grid.innerHTML = codes.map(code => {
+            let info = allSources.find(s => {
+                const c = (s.code || '').replace(/^s_/i, '');
+                return c === code;
+            });
+            const name = (info ? (info.display_name || info.name) : code) || code;
+            const price = info ? (info.price || 0) : 0;
+            const chgPct = info ? (info.change_pct || 0) : 0;
+            const cls = chgPct > 0 ? 'up' : (chgPct < 0 ? 'down' : '');
+            const sign = chgPct > 0 ? '+' : '';
+            return `<div class="watchlist-card" data-code="${code}" onclick="showWatchlistDetail('${code}')">
+                <div class="watchlist-card-info">
+                    <div class="watchlist-card-name">${name}</div>
+                    <div class="watchlist-card-code">${code} <span class="${cls}" style="margin-left:8px;">${price > 0 ? price.toFixed(2) : '--'}</span> <span class="${cls}" style="font-size:11px;">${price > 0 ? sign + chgPct.toFixed(2) + '%' : ''}</span></div>
+                </div>
+                <button class="watchlist-card-remove" data-code="${code}">✕</button>
+            </div>`;
+        }).join('');
+
+        // 绑定删除按钮事件
+        grid.querySelectorAll('.watchlist-card-remove').forEach(btn => {
+            btn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                toggleWatchlist(this.dataset.code);
+            });
+        });
+    }
+
+    function showWatchlistDetail(code) {
+        const allSources = [
+            ...(allData || []),
+            ...(recommendData.long_term || []),
+            ...(recommendData.short_term || []),
+        ];
+        let stock = allSources.find(s => {
+            const c = (s.code || '').replace(/^s_/i, '');
+            return c === code;
+        });
+        if (stock) {
+            showDetail({ ...stock, type: stock.type || 'stock', display_name: stock.display_name || stock.name, code: stock.code || code });
+        } else {
+            // 如果找不到，尝试查询
+            const prefix = code.startsWith('6') || code.startsWith('68') ? 'sh' : 'sz';
+            fetch('/api/query?codes=' + encodeURIComponent(prefix + code))
+                .then(r => r.json())
+                .then(json => {
+                    if (json.data && json.data.length > 0) {
+                        const d = json.data[0];
+                        showDetail({ ...d, type: d.type || 'stock', display_name: d.name, code: d.code });
+                    }
+                })
+                .catch(() => {});
+        }
+    }
+
+    // 初始渲染自选股
+    renderWatchlist();
+
     // 初始加载 & 定时刷新
     fetchTradingStatus();
     setInterval(() => {
         tickHoldings();
         fetchTradingStatus();
+        renderWatchlist();
     }, 5000);
 </script>
 </body>
