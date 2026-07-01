@@ -66,7 +66,7 @@ EASTMONEY_ALL_STOCKS_URL = (
     "?pn=1&pz=6000&po=1&np=1&ut=bd1d9ddb04089700cf9c27f6f7426281"
     "&fltt=2&invt=2&fid=f3"
     "&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
-    "&fields=f2,f3,f4,f5,f6,f12,f14,f15,f16,f17,f18,f20,f23,f167"
+    "&fields=f2,f3,f4,f5,f6,f9,f12,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f37,f39,f42,f45,f49,f58,f84,f85,f115,f167,f168,f177,f184,f185,f186"
 )
 EASTMONEY_HEADERS = {
     "Referer": "https://quote.eastmoney.com/",
@@ -129,8 +129,38 @@ def _update_cache(data):
     RECOMMEND_CACHE_DAILY_KEY = _get_today_str()
 
 
+def _safe_raw_float(raw, default=None):
+    """安全转换为 float，排除 '-' 等无效值"""
+    try:
+        if raw is None or raw == "-" or raw == "":
+            return default
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
+
 def fetch_all_a_stocks():
-    """从东方财富拉取全部 A 股行情（一次调用），返回 list[dict]"""
+    """从东方财富拉取全部 A 股行情（一次调用），返回 list[dict]
+    
+    新增强化字段说明：
+    - f9: 动态市盈率(dynamic PE)
+    - f24: 60日涨跌幅
+    - f25: 5日涨跌幅
+    - f37: ROE
+    - f39: 市盈率(静态)
+    - f42: 市净率
+    - f45: 净利润同比增长率(%)
+    - f49: 每股收益
+    - f58: 每股经营现金流
+    - f84: 总负债率(%)
+    - f85: 每股净资产
+    - f115: PE(TTM)
+    - f168: 换手率
+    - f177: 5日换手率
+    - f184: 总市值(元)
+    - f185: 净利润(元)
+    - f186: 营业总收入(元)
+    """
     try:
         resp = requests.get(EASTMONEY_ALL_STOCKS_URL, headers=EASTMONEY_HEADERS, timeout=15)
         data = resp.json()
@@ -139,81 +169,740 @@ def fetch_all_a_stocks():
         for item in items:
             code = item.get("f12", "")
             market = item.get("f13", 0)
-            # market: 0=深圳, 1=上海
             prefix = "sz" if market == 0 else "sh"
             full_code = prefix + code
-            price = item.get("f2")
-            change_pct = item.get("f3")
-            volume = item.get("f5")
-            amount = item.get("f6")
-            high = item.get("f15")
-            low = item.get("f16")
-            open_ = item.get("f17")
-            prev_close = item.get("f18")
-            pe = item.get("f167")  # PE * 100
-            pb = item.get("f23", 0)  # PB * 100
-            market_cap = item.get("f20")
-            change = item.get("f4")
             name = item.get("f14", "")
 
-            stocks.append({
+            # 基础行情
+            price = _safe_raw_float(item.get("f2"))
+            change = _safe_raw_float(item.get("f4"))
+            change_pct = _safe_raw_float(item.get("f3"))
+            volume = _safe_raw_float(item.get("f5"))
+            amount = _safe_raw_float(item.get("f6"))
+            high = _safe_raw_float(item.get("f15"))
+            low = _safe_raw_float(item.get("f16"))
+            open_ = _safe_raw_float(item.get("f17"))
+            prev_close = _safe_raw_float(item.get("f18"))
+
+            # 估值指标
+            pe_dynamic = _safe_raw_float(item.get("f9"))        # 动态PE
+            pe_ttm = _safe_raw_float(item.get("f115"))          # PE TTM
+            pb = _safe_raw_float(item.get("f23", 0))            # PB
+            if pb is not None:
+                pb = pb  # 注意: 东方财富的 PB 可能也需要 /100
+
+            # 财务质量指标
+            roe = _safe_raw_float(item.get("f37"))              # ROE (%)
+            eps = _safe_raw_float(item.get("f49"))              # 每股收益
+            net_profit = _safe_raw_float(item.get("f185"))      # 净利润(元)
+
+            # 市值
+            market_cap = _safe_raw_float(item.get("f20"))       # 总市值
+            float_market_cap = _safe_raw_float(item.get("f21")) # 流通市值
+
+            # 动量指标
+            chg_60d = _safe_raw_float(item.get("f24"))          # 60日涨跌幅
+            chg_5d = _safe_raw_float(item.get("f25"))           # 5日涨跌幅
+
+            # 换手率
+            turnover_rate = _safe_raw_float(item.get("f168"))   # 换手率(%)
+            turnover_5d = _safe_raw_float(item.get("f177"))     # 5日换手率
+
+            # 新增财务质量字段
+            profit_growth = _safe_raw_float(item.get("f45"))    # 净利润同比增长率(%)
+            revenue_growth = _safe_raw_float(item.get("f46"))   # 营收增长率(%)
+            debt_ratio = _safe_raw_float(item.get("f84"))       # 总负债率(%)
+            bvps = _safe_raw_float(item.get("f85"))             # 每股净资产
+            ocf_per_share = _safe_raw_float(item.get("f58"))    # 每股经营现金流
+            revenue = _safe_raw_float(item.get("f186"))         # 营业总收入(元)
+
+            stock = {
                 "code": full_code,
                 "name": name,
-                "price": price if price and price != "-" else None,
-                "change": change if change and change != "-" else None,
-                "change_pct": change_pct if change_pct and change_pct != "-" else None,
-                "volume": volume if volume and volume != "-" else None,
-                "amount": amount if amount and amount != "-" else None,
-                "high": high if high and high != "-" else None,
-                "low": low if low and low != "-" else None,
-                "open": open_ if open_ and open_ != "-" else None,
-                "prev_close": prev_close if prev_close and prev_close != "-" else None,
-                "pe": pe if pe and pe != "-" else None,
-                "pb": pb if pb else None,
-                "market_cap": market_cap if market_cap and market_cap != "-" else None,
-            })
+                "price": price,
+                "change": change,
+                "change_pct": change_pct,
+                "volume": volume,
+                "amount": amount,
+                "high": high,
+                "low": low,
+                "open": open_,
+                "prev_close": prev_close,
+                # 估值
+                "pe_dynamic": pe_dynamic,
+                "pe_ttm": pe_ttm,
+                "pe": pe_ttm,  # 向后兼容：保留 pe 字段，使用 TTM PE
+                "pb": pb,
+                # 财务
+                "roe": roe,
+                "eps": eps,
+                "net_profit": net_profit,
+                # 市值
+                "market_cap": market_cap,
+                "float_market_cap": float_market_cap,
+                # 动量
+                "chg_60d": chg_60d,
+                "chg_5d": chg_5d,
+                # 换手率
+                "turnover_rate": turnover_rate,
+                "turnover_5d": turnover_5d,
+                # 新增财务质量
+                "profit_growth": profit_growth,
+                "revenue_growth": revenue_growth,
+                "debt_ratio": debt_ratio,
+                "bvps": bvps,
+                "ocf_per_share": ocf_per_share,
+                "revenue": revenue,
+            }
+            stocks.append(stock)
         return stocks
     except Exception as e:
         print(f"[ERROR] 拉取全A股失败: {e}")
         return []
 
 
-def score_stock(s):
-    """给单只股票打分，分数越高越推荐"""
-    score = 0
+# ============= 技术指标计算函数 =============
+
+def _sma(data, period):
+    """简单移动平均"""
+    if len(data) < period:
+        return [None] * len(data)
+    result = []
+    for i in range(len(data)):
+        if i < period - 1:
+            result.append(None)
+        else:
+            result.append(sum(data[i - period + 1:i + 1]) / period)
+    return result
+
+
+def _ema(data, period):
+    """指数移动平均"""
+    if len(data) < period:
+        return [None] * len(data)
+    result = [None] * len(data)
+    multiplier = 2.0 / (period + 1.0)
+    result[period - 1] = sum(data[:period]) / period
+    for i in range(period, len(data)):
+        result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1]
+    return result
+
+
+def _rsi(close_prices, period=14):
+    """RSI 相对强弱指标"""
+    if len(close_prices) < period + 1:
+        return [None] * len(close_prices)
+    gains = [0] * len(close_prices)
+    losses = [0] * len(close_prices)
+    rsi = [None] * period
+    for i in range(1, period + 1):
+        diff = close_prices[i] - close_prices[i - 1]
+        if diff > 0:
+            gains[i] = diff
+        else:
+            losses[i] = -diff
+    avg_gain = sum(gains[1:period + 1]) / period
+    avg_loss = sum(losses[1:period + 1]) / period
+    for i in range(period, len(close_prices)):
+        diff = close_prices[i] - close_prices[i - 1]
+        gain = max(diff, 0)
+        loss = max(-diff, 0)
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+        if avg_loss == 0:
+            rsi.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi.append(100.0 - 100.0 / (1.0 + rs))
+    return rsi
+
+
+def _kdj(highs, lows, closes, n=9, m1=3, m2=3):
+    """KDJ 指标，返回: (k_values, d_values, j_values)"""
+    length = len(closes)
+    if length < n:
+        return ([None] * length, [None] * length, [None] * length)
+    k_vals, d_vals, j_vals = [None] * length, [None] * length, [None] * length
+    prev_k, prev_d = 50.0, 50.0
+    for i in range(n - 1, length):
+        highest = max(highs[i - n + 1:i + 1])
+        lowest = min(lows[i - n + 1:i + 1])
+        rsv = ((closes[i] - lowest) / (highest - lowest)) * 100 if highest != lowest else 50.0
+        prev_k = prev_k * (1 - 1.0 / m1) + rsv / m1
+        prev_d = prev_d * (1 - 1.0 / m2) + prev_k / m2
+        k_vals[i] = round(prev_k, 2)
+        d_vals[i] = round(prev_d, 2)
+        j_vals[i] = round(3 * prev_k - 2 * prev_d, 2)
+    return k_vals, d_vals, j_vals
+
+
+def _atr(highs, lows, closes, period=14):
+    """ATR 平均真实波幅 (波动率)"""
+    if len(closes) < period + 1:
+        return [None] * len(closes)
+    tr = [0] * len(closes)
+    for i in range(1, len(closes)):
+        tr[i] = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+    atr_vals = [None] * period
+    avg = sum(tr[1:period + 1]) / period
+    atr_vals.append(round(avg, 4))
+    for i in range(period + 1, len(closes)):
+        avg = (avg * (period - 1) + tr[i]) / period
+        atr_vals.append(round(avg, 4))
+    return atr_vals
+
+
+def _macd(close_prices, fast=12, slow=26, signal=9):
+    """MACD 指标，返回: (dif, dea, macd_hist)"""
+    ema_fast = _ema(close_prices, fast)
+    ema_slow = _ema(close_prices, slow)
+    dif = []
+    for i in range(len(close_prices)):
+        if ema_fast[i] is not None and ema_slow[i] is not None:
+            dif.append(round(ema_fast[i] - ema_slow[i], 4))
+        else:
+            dif.append(None)
+    valid_start = next((i for i in range(len(close_prices)) if dif[i] is not None), len(close_prices))
+    valid_dif = dif[valid_start:]
+    dea_ema = _ema(valid_dif, signal)
+    dea = [None] * valid_start + [round(v, 4) if v is not None else None for v in dea_ema]
+    macd_hist = []
+    for i in range(len(close_prices)):
+        if dif[i] is not None and dea[i] is not None:
+            macd_hist.append(round((dif[i] - dea[i]) * 2, 4))
+        else:
+            macd_hist.append(None)
+    return dif, dea, macd_hist
+
+
+def _bollinger(close_prices, period=20, std_mult=2):
+    """布林带，返回: (upper, middle, lower, bandwidth)"""
+    ma = _sma(close_prices, period)
+    upper, lower, bandwidth = [None] * len(close_prices), [None] * len(close_prices), [None] * len(close_prices)
+    for i in range(period - 1, len(close_prices)):
+        window = close_prices[i - period + 1:i + 1]
+        mean = sum(window) / period
+        variance = sum((x - mean) ** 2 for x in window) / period
+        std = variance ** 0.5
+        upper[i] = round(mean + std_mult * std, 4)
+        lower[i] = round(mean - std_mult * std, 4)
+        if ma[i]:
+            bandwidth[i] = round((upper[i] - lower[i]) / ma[i] * 100, 2)
+    return upper, ma, lower, bandwidth
+
+
+def _last(arr):
+    """获取数组最后一个非 None 值"""
+    for v in reversed(arr):
+        if v is not None:
+            return v
+    return None
+
+
+def fetch_kline_for_score(code):
+    """拉取单只股票近200日 K 线（用于技术指标计算）"""
     try:
+        bs_code = code
+        bs.login()
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=250)).strftime("%Y-%m-%d")
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume,amount",
+            start_date=start_date,
+            end_date=end_date,
+            frequency="d",
+            adjustflag="2"
+        )
+        data_list = []
+        while (rs.error_code == '0') and rs.next():
+            data_list.append(rs.get_row_data())
+        bs.logout()
+        if not data_list or len(data_list) < 60:
+            return None
+        dates, opens, highs, lows, closes, volumes, amounts = [], [], [], [], [], [], []
+        for row in data_list:
+            if row[1] == '' or row[2] == '' or row[4] == '':
+                continue
+            dates.append(row[0])
+            opens.append(float(row[1]))
+            highs.append(float(row[2]))
+            lows.append(float(row[3]))
+            closes.append(float(row[4]))
+            volumes.append(float(row[5]) if row[5] != '' else 0)
+            amounts.append(float(row[6]) if row[6] != '' else 0)
+        if len(closes) < 60:
+            return None
+        return {
+            "code": code, "dates": dates, "opens": opens, "highs": highs,
+            "lows": lows, "closes": closes, "volumes": volumes, "amounts": amounts,
+        }
+    except Exception as e:
+        print(f"[KL] {code} K线拉取失败: {e}")
+        return None
+
+
+def _smi(highs, lows, closes, p_k=14, p_d=3, p_smooth=3):
+    """Stochastic Momentum Index - measures momentum relative to midpoint"""
+    n = len(closes)
+    if n < p_k + p_d:
+        return [None] * n, [None] * n
+    mid = [(h + l) / 2.0 for h, l in zip(highs, lows)]
+    smi_val = [None] * n
+    # Compute raw SMI: (close - midpoint_of_range) / (range/2) * 100
+    for i in range(p_k - 1, n):
+        hh = max(mid[i - p_k + 1:i + 1])
+        ll = min(mid[i - p_k + 1:i + 1])
+        rng = hh - ll
+        if rng == 0:
+            smi_val[i] = 0
+        else:
+            smi_val[i] = ((mid[i] - (hh + ll) / 2) / (rng / 2)) * 100
+    # Smooth with SMA
+    smi_s = _sma(smi_val, p_smooth)
+    # Signal line = SMA of smoothed SMI
+    sig = _sma(smi_s, p_d)
+    return smi_s, sig
+
+
+def _cci(highs, lows, closes, period=20):
+    """Commodity Channel Index - measures deviation from typical price"""
+    n = len(closes)
+    if n < period:
+        return [None] * n
+    tp = [(h + l + c) / 3.0 for h, l, c in zip(highs, lows, closes)]
+    cci = [None] * n
+    for i in range(period - 1, n):
+        sma_tp = sum(tp[i - period + 1:i + 1]) / period
+        md = sum(abs(t - sma_tp) for t in tp[i - period + 1:i + 1]) / period
+        if md == 0:
+            cci[i] = 0
+        else:
+            cci[i] = (tp[i] - sma_tp) / (0.015 * md)
+    return cci
+
+
+def compute_tech_factors(kl):
+    """基于K线数据计算所有技术指标因子，返回 dict
+    
+    趋势+动量+成交量+布林带综合评分
+    """
+    closes = kl["closes"]
+    highs = kl["highs"]
+    lows = kl["lows"]
+    volumes = kl["volumes"]
+    amounts = kl["amounts"]
+    n = len(closes)
+
+    ma5_arr = _sma(closes, 5)
+    ma10_arr = _sma(closes, 10)
+    ma20_arr = _sma(closes, 20)
+    ma60_arr = _sma(closes, 60)
+    dif_arr, dea_arr, macd_h = _macd(closes)
+    rsi_arr = _rsi(closes, 14)
+    k_arr, d_arr, j_arr = _kdj(highs, lows, closes, 9, 3, 3)
+    atr_arr = _atr(highs, lows, closes, 14)
+    boll_up, boll_mid, boll_low, boll_bw = _bollinger(closes, 20, 2)
+    smi_s_arr, smi_sig_arr = _smi(highs, lows, closes, 14, 3, 3)
+    cci_arr = _cci(highs, lows, closes, 20)
+
+    ma5 = _last(ma5_arr)
+    ma10 = _last(ma10_arr)
+    ma20 = _last(ma20_arr)
+    ma60 = _last(ma60_arr)
+    dif = _last(dif_arr)
+    dea = _last(dea_arr)
+    macd_hist_val = _last(macd_h)
+    rsi = _last(rsi_arr)
+    kj_k = _last(k_arr)
+    kj_d = _last(d_arr)
+    kj_j = _last(j_arr)
+    smi_s = _last(smi_s_arr)
+    smi_sig = _last(smi_sig_arr)
+    cci = _last(cci_arr)
+    atr_now = _last(atr_arr)
+    bb_up = _last(boll_up)
+    bb_low = _last(boll_low)
+    bb_mid = _last(boll_mid)
+    bb_bw = _last(boll_bw)
+
+    price = closes[-1]
+    avg_vol_20 = sum(volumes[-21:-1]) / 20 if n >= 21 and sum(volumes[-21:-1]) > 0 else volumes[-1]
+    vol_ratio = round(volumes[-1] / avg_vol_20, 2) if avg_vol_20 > 0 else 1.0
+    today_amount = amounts[-1]
+
+    # 连续放量天数
+    consec_up = 0
+    for i in range(n - 1, max(n - 7, 0), -1):
+        if volumes[i] > volumes[i - 1] * 1.1:
+            consec_up += 1
+        else:
+            break
+
+    return {
+        "ma5": round(ma5, 2) if ma5 else None,
+        "ma10": round(ma10, 2) if ma10 else None,
+        "ma20": round(ma20, 2) if ma20 else None,
+        "ma60": round(ma60, 2) if ma60 else None,
+        "macd_dif": round(dif, 4) if dif else None,
+        "macd_dea": round(dea, 4) if dea else None,
+        "macd_hist": round(macd_hist_val, 4) if macd_hist_val is not None else None,
+        "rsi": round(rsi, 1) if rsi else None,
+        "kdj_k": kj_k, "kdj_d": kj_d, "kdj_j": kj_j,
+        "atr": round(atr_now, 4) if atr_now else None,
+        "bb_upper": round(bb_up, 2) if bb_up else None,
+        "bb_lower": round(bb_low, 2) if bb_low else None,
+        "bb_mid": round(bb_mid, 2) if bb_mid else None,
+        "bb_width": round(bb_bw, 2) if bb_bw else None,
+        "smi_s": round(smi_s, 2) if smi_s is not None else None,
+        "smi_sig": round(smi_sig, 2) if smi_sig is not None else None,
+        "cci": round(cci, 2) if cci is not None else None,
+        "bb_bw": round(bb_bw, 2) if bb_bw else None,
+        "vol_ratio": vol_ratio,
+        "consec_up": consec_up,
+        "price": price,
+    }
+
+
+def score_stock(s, mode="long"):
+    """A股多因子评分体系（专业版·100分制）
+
+    8 因子权重:
+      趋势 15% | 动量 10% | 成交量 10% | 资金 20%
+      基本面 15% | 估值 10% | 市场情绪 10% | 风险 10%
+
+    mode='long'  → 估值/基本面权重上调
+    mode='short' → 趋势/资金/动量权重上调
+
+    返回: dict { total, grade, factors, tech }
+    """
+    try:
+        price = float(s.get("price") or 0)
         chg = float(s.get("change_pct") or 0)
+        amount = float(s.get("amount") or 0)
         pe = float(s.get("pe") or 0)
         pb = float(s.get("pb") or 0)
-        amount = float(s.get("amount") or 0)
+        roe = float(s.get("roe") or 0)
+        eps = float(s.get("eps") or 0)
+        market_cap = float(s.get("market_cap") or 0)
+        chg_60d = float(s.get("chg_60d") or 0)
+        chg_5d = float(s.get("chg_5d") or 0)
+        turnover = float(s.get("turnover_rate") or 0)
+        turnover_5d = float(s.get("turnover_5d") or 0)
     except (ValueError, TypeError):
-        return -1000
+        return {"total": 0, "grade": "D", "factors": {}, "tech": {}}
 
-    # 成交额要求 > 1亿
-    if amount < 100_000_000:
-        score -= 100
-    # PE 合理区间 5-30
-    if 5 < pe <= 15:
-        score += 3
-    elif 15 < pe <= 30:
-        score += 1
-    elif pe > 100 or pe <= 0:
-        score -= 2
-    # PB 合理区间 0.5-5
-    if 0.5 < pb <= 2:
-        score += 2
-    elif 2 < pb <= 5:
-        score += 1
-    elif pb > 10:
-        score -= 2
-    # 当日涨跌：温和上涨+1，大涨+0，下跌-1
-    if 0 < chg <= 2:
-        score += 1
-    elif chg > 5:
-        score += 0
-    elif chg < -3:
-        score -= 1
-    return score
+    name = s.get("name", "")
+    if any(kw in name for kw in ["ST", "退", "*ST"]):
+        return {"total": -100, "grade": "D", "factors": {"risk": -100}, "tech": {}}
+    if price is None or price <= 0 or amount is None or amount <= 0:
+        return {"total": 0, "grade": "D", "factors": {}, "tech": {}}
+
+    tech = s.get("_tech") or {}
+
+    # =========== 一、趋势因子 (15分) ===========
+    trend_score = 0.0
+    if tech:
+        if tech.get("ma5") and price > tech["ma5"]:
+            trend_score += 2
+        if tech.get("ma10") and price > tech["ma10"]:
+            trend_score += 2
+        if tech.get("ma20") and price > tech["ma20"]:
+            trend_score += 3
+        if tech.get("ma60") and price > tech["ma60"]:
+            trend_score += 4
+        if tech.get("ma5") and tech.get("ma10") and tech.get("ma20"):
+            if tech["ma5"] > tech["ma10"] > tech["ma20"]:
+                trend_score += 4
+    else:
+        if 0 < chg_60d <= 25:
+            trend_score += 5
+        if 0 < chg_5d <= 10:
+            trend_score += 3
+    trend_score = min(trend_score, 15)
+
+    # =========== 二、动量因子 (10分) ===========
+    mom_score = 0.0
+    if tech:
+        dif = tech.get("macd_dif")
+        dea = tech.get("macd_dea")
+        if dif is not None and dea is not None and dif > dea:
+            mom_score += 3
+        rsi = tech.get("rsi")
+        if rsi and 55 <= rsi <= 75:
+            mom_score += 2
+        if tech.get("kdj_k") and tech.get("kdj_d") and tech["kdj_k"] > tech["kdj_d"]:
+            mom_score += 2
+    if chg_60d > 0 and price > 0:
+        max_60_adj = price / (1 + chg_60d / 100) * 1.25
+        if price >= max_60_adj:
+            mom_score += 2
+    if not tech:
+        if 1 <= chg_5d <= 10:
+            mom_score += 3
+        if 0 < chg <= 5:
+            mom_score += 1
+    mom_score = min(mom_score, 10)
+
+    # =========== 三、成交量因子 (10分) ===========
+    vol_score = 0.0
+    if amount > 1e9:
+        vol_score += 3
+    elif amount > 5e8:
+        vol_score += 2
+    elif amount > 2e8:
+        vol_score += 1
+    if 3 <= turnover <= 15:
+        vol_score += 3
+    elif 1 <= turnover < 3:
+        vol_score += 2
+    vr = tech.get("vol_ratio")
+    if vr and vr > 1.5:
+        vol_score += 2
+    elif turnover > 0 and turnover_5d and turnover_5d > 0:
+        if turnover / turnover_5d > 1.5:
+            vol_score += 2
+    if tech and tech.get("consec_up", 0) >= 3:
+        vol_score += 2
+    vol_score = min(vol_score, 10)
+
+    # =========== 四、资金因子 (20分) ===========
+    fund_score = 0.0
+    if amount > 2e9:
+        fund_score += 6
+    elif amount > 1e9:
+        fund_score += 4
+    elif amount > 5e8:
+        fund_score += 2
+    if 1.5 <= turnover <= 10:
+        fund_score += 5
+    elif 0.5 <= turnover < 1.5:
+        fund_score += 2
+    if 2 <= chg <= 9:
+        fund_score += 4
+    elif 0 < chg < 2:
+        fund_score += 2
+    if 3 <= chg_5d <= 15:
+        fund_score += 4
+        if tech and tech.get("consec_up", 0) >= 4:
+            fund_score += 1
+    fund_score = min(fund_score, 20)
+
+    # =========== 五、基本面因子 (15分) ===========
+    funda_score = 0.0
+    if roe > 0:
+        if roe > 20:
+            funda_score += 3
+        elif roe > 15:
+            funda_score += 2
+        elif roe > 8:
+            funda_score += 1
+    if eps and eps > 0:
+        if eps > 2:
+            funda_score += 3
+        elif eps > 1:
+            funda_score += 2
+        elif eps > 0.3:
+            funda_score += 1
+    if market_cap > 0:
+        if market_cap > 1e11:
+            funda_score += 3
+        elif market_cap > 5e10:
+            funda_score += 2
+        elif market_cap > 1e10:
+            funda_score += 1
+    if 5 <= chg_60d <= 30:
+        funda_score += 3
+    if pe <= 0 and roe <= 0:
+        funda_score -= 3
+    funda_score = min(funda_score, 15)
+
+    # =========== 六、估值因子 (10分) ===========
+    val_score = 0.0
+    if pe > 0:
+        if pe < 10:
+            val_score += 5
+        elif pe < 18:
+            val_score += 4
+        elif pe < 25:
+            val_score += 2
+        elif pe < 50:
+            val_score += 1
+        else:
+            val_score -= 1
+    if pb and pb > 0:
+        if pb < 1:
+            val_score += 3
+        elif pb < 2:
+            val_score += 2
+        elif pb < 5:
+            val_score += 1
+        elif pb > 10:
+            val_score -= 1
+    val_score = max(0, min(val_score, 10))
+
+    # =========== 七、市场情绪因子 (10分) ===========
+    sent_score = 0.0
+    if 2 <= chg <= 5:
+        sent_score += 3
+    elif 0 < chg < 2:
+        sent_score += 1
+    if amount > 1e9 and 1 <= chg <= 6:
+        sent_score += 3
+    if 10 <= chg_60d <= 40:
+        sent_score += 2
+    if turnover > 5 and chg > 1:
+        sent_score += 2
+    sent_score = min(sent_score, 10)
+
+    # =========== 八、风险因子 (10分，扣分制) ===========
+    risk_score = 10.0
+    if any(kw in name for kw in ["ST", "退"]):
+        risk_score -= 10
+    if pe and pe > 200:
+        risk_score -= 4
+    if pb and pb > 20:
+        risk_score -= 2
+    if market_cap and market_cap < 5e9:
+        risk_score -= 2
+    if chg_60d > 80:
+        risk_score -= 4
+    if chg_60d < -40:
+        risk_score -= 3
+    if turnover and turnover > 25:
+        risk_score -= 2
+    if amount < 5e7:
+        risk_score -= 4
+    risk_score = max(risk_score, 0)
+
+    # =========== 九、技术择时因子 (10分，基于SMI/CCI/布林带) ===========
+    timing_score = 5.0  # 基准分
+    if tech:
+        smi_s = tech.get("smi_s")
+        cci_val = tech.get("cci")
+        bb_upper = tech.get("bb_upper")
+        bb_lower = tech.get("bb_lower")
+        bb_mid = tech.get("bb_mid")
+        rsi_val = tech.get("rsi")
+        bb_bw = tech.get("bb_bw")
+
+        if mode == "long":
+            # 长期：偏好低位/超卖区域的买入时机
+            if smi_s is not None and smi_s < -30:
+                timing_score += 2.5  # SMI深度超卖，好买点
+            elif smi_s is not None and smi_s < -10:
+                timing_score += 1.5
+            if cci_val is not None and cci_val < -100:
+                timing_score += 2.0  # CCI超卖
+            elif cci_val is not None and cci_val < -50:
+                timing_score += 1.0
+            if bb_lower and price and price <= bb_lower * 1.03:
+                timing_score += 2.0  # 价格在布林下轨附近，低估
+            elif bb_mid and price and price <= bb_mid:
+                timing_score += 1.0  # 价格在中轨以下
+            # 惩罚：高位追涨
+            if smi_s is not None and smi_s > 40:
+                timing_score -= 2.0
+            if cci_val is not None and cci_val > 150:
+                timing_score -= 2.0
+            if bb_upper and price and price >= bb_upper:
+                timing_score -= 2.5  # 上轨以上，太贵
+            if rsi_val and rsi_val > 80:
+                timing_score -= 2.0
+        else:
+            # 短期：偏好强势但不过热的动量信号
+            if smi_s is not None and -25 <= smi_s <= 25:
+                timing_score += 1.0  # SMI在中性区，趋势可持续
+            elif smi_s is not None and 25 < smi_s <= 45:
+                timing_score += 2.0  # 温和强势
+            if cci_val is not None and 0 < cci_val <= 120:
+                timing_score += 1.5  # CCI温和看涨
+            elif cci_val is not None and 120 < cci_val <= 180:
+                timing_score += 0.5  # 偏强但有回调风险
+            # 布林带宽度：收窄预示突破
+            if bb_bw is not None:
+                if bb_bw < 3:
+                    timing_score += 1.5  # 带宽极窄，蓄势待发
+                elif bb_bw < 5:
+                    timing_score += 0.5
+            # MA排列确认
+            ma5 = tech.get("ma5")
+            ma10 = tech.get("ma10")
+            ma20 = tech.get("ma20")
+            if ma5 and ma10 and ma20 and price:
+                if price > ma5 and ma5 > ma10:
+                    timing_score += 1.5  # 短中期均线多头
+                if ma5 > ma10 > ma20:
+                    timing_score += 1.0  # 多头排列完美
+            # 惩罚：极端过热
+            if smi_s is not None and smi_s > 50:
+                timing_score -= 2.5
+            if cci_val is not None and cci_val > 200:
+                timing_score -= 3.0
+            if rsi_val and rsi_val > 85:
+                timing_score -= 2.5
+            if bb_upper and price and price >= bb_upper * 1.02:
+                timing_score -= 2.0  # 突破上轨过多，有回调风险
+
+    timing_score = max(0, min(timing_score, 10))
+
+    # ===== 权重分配 =====
+    if mode == "long":
+        weights = {
+            "trend": 0.10, "momentum": 0.07, "volume": 0.07, "fund": 0.14,
+            "fundamental": 0.20, "valuation": 0.14, "sentiment": 0.07,
+            "risk": 0.11, "timing": 0.10,
+        }
+    else:
+        weights = {
+            "trend": 0.15, "momentum": 0.12, "volume": 0.10, "fund": 0.20,
+            "fundamental": 0.07, "valuation": 0.05, "sentiment": 0.10,
+            "risk": 0.06, "timing": 0.15,
+        }
+
+    raw = {
+        "trend": trend_score, "momentum": mom_score, "volume": vol_score,
+        "fund": fund_score, "fundamental": funda_score, "valuation": val_score,
+        "sentiment": sent_score, "risk": risk_score,
+        "timing": round(timing_score, 1),
+    }
+
+    # 修正后的评分公式：每个因子先归一化(除以满分)，再乘以权重百分比，累加得百分制总分
+    total = round(
+        (raw["trend"] / 15) * weights["trend"] * 100 +
+        (raw["momentum"] / 10) * weights["momentum"] * 100 +
+        (raw["volume"] / 10) * weights["volume"] * 100 +
+        (raw["fund"] / 20) * weights["fund"] * 100 +
+        (raw["fundamental"] / 15) * weights["fundamental"] * 100 +
+        (raw["valuation"] / 10) * weights["valuation"] * 100 +
+        (raw["sentiment"] / 10) * weights["sentiment"] * 100 +
+        (raw["risk"] / 10) * weights["risk"] * 100 +
+        (raw["timing"] / 10) * weights["timing"] * 100, 1
+    )
+
+    if total >= 90:
+        grade = "S"
+    elif total >= 80:
+        grade = "A"
+    elif total >= 70:
+        grade = "B"
+    elif total >= 60:
+        grade = "C"
+    else:
+        grade = "D"
+
+    return {
+        "total": total, "grade": grade, "factors": raw,
+        "tech": {
+            "rsi": tech.get("rsi"), "macd_dif": tech.get("macd_dif"),
+            "kdj_k": tech.get("kdj_k"), "kdj_j": tech.get("kdj_j"),
+            "atr": tech.get("atr"), "vol_ratio": tech.get("vol_ratio"),
+            "ma5": tech.get("ma5"), "ma20": tech.get("ma20"),
+            "bb_upper": tech.get("bb_upper"), "bb_lower": tech.get("bb_lower"),
+            "smi_s": tech.get("smi_s"), "cci": tech.get("cci"),
+            "bb_width": tech.get("bb_width"),
+        }
+    }
 
 
 def calc_trade_prices(s):
@@ -274,37 +963,147 @@ def calc_trade_prices(s):
 
 
 def gen_recommend_stocks():
-    """生成推荐列表：长期=估值优先，短期=量价结合"""
+    """生成推荐列表：
+    
+    长期推荐：多因子价值评分 + 估值优先 + 盈利能力 + 大盘过滤
+    短期推荐：多因子动量评分 + 换手率 + 成交额 + 趋势优先
+    """
     all_stocks = fetch_all_a_stocks()
     if not all_stocks:
         return {"long_term": [], "short_term": []}
 
-    # 计算评分
+    # ===== 两阶段评分：Phase 1 全市场基本面初筛；Phase 2 top候选拉K线 =====
     for s in all_stocks:
-        s["_score"] = score_stock(s)
+        s["_score_long"] = score_stock(s, mode="long")
+        s["_score_short"] = score_stock(s, mode="short")
 
-    # 过滤掉低活跃度和负分
-    candidates = [s for s in all_stocks if s["_score"] >= -5]
+    # ===== 长期推荐：价值投资导向 =====
+    long_candidates = []
+    for s in all_stocks:
+        pe = s.get("pe")
+        pb = s.get("pb")
+        mcap = s.get("market_cap")
+        roe = s.get("roe")
+        long_total = s["_score_long"].get("total", 0)
+        fund_score = s["_score_long"].get("factors", {}).get("fundamental", 0)
+        val_score = s["_score_long"].get("factors", {}).get("valuation", 0)
+        # 升级：允许高基本面(>10)+高估值(>7)的标的以稍低总分(>=42)入围
+        if (long_total >= 45
+                and pe is not None and pe > 0
+                and pb is not None and pb > 0
+                and mcap is not None and mcap > 2_000_000_000
+                and roe is not None and roe > 0):
+            long_candidates.append(s)
+        elif (long_total >= 42
+                and fund_score >= 10
+                and val_score >= 7
+                and pe is not None and pe > 0
+                and pb is not None and pb > 0
+                and mcap is not None and mcap > 2_000_000_000
+                and roe is not None and roe > 0):
+            long_candidates.append(s)
 
-    # 长期推荐：pe 合理 + 市值大 + 高分
-    long_candidates = [s for s in candidates if s.get("pe") and 5 < float(s["pe"]) <= 30]
-    long_candidates.sort(key=lambda x: (x["_score"], float(x.get("market_cap") or 0)), reverse=True)
+    long_candidates.sort(
+        key=lambda x: (
+            x["_score_long"].get("total", 0),
+            x["_score_long"].get("factors", {}).get("fundamental", 0),
+            x["_score_long"].get("factors", {}).get("valuation", 0),
+            float(x.get("market_cap") or 0),
+            float(x.get("roe") or 0),
+        ),
+        reverse=True
+    )
+
+    # Phase 2: 对长期top 20拉K线做技术指标评分
+    long_top20 = long_candidates[:20]
+    for s in long_top20:
+        code = s.get("code", "")
+        if code:
+            kl = fetch_kline_for_score(code)
+            if kl:
+                s["_tech"] = compute_tech_factors(kl)
+                s["_score_long"] = score_stock(s, mode="long")  # 用 K 线数据重新评分
+
+    long_candidates = long_top20  # 最终在 top20 中按新评分排序
+    long_candidates.sort(
+        key=lambda x: (
+            x["_score_long"].get("total", 0),
+            x["_score_long"].get("factors", {}).get("fundamental", 0),
+            x["_score_long"].get("factors", {}).get("valuation", 0),
+            float(x.get("market_cap") or 0),
+            float(x.get("roe") or 0),
+        ),
+        reverse=True
+    )
     long_term = long_candidates[:12]
 
-    # 短期推荐：成交额大 + 量价活跃
-    short_candidates = [s for s in candidates if s.get("amount") and float(s["amount"]) > 500_000_000]
-    short_candidates.sort(key=lambda x: (float(x.get("amount") or 0), x["_score"]), reverse=True)
-    short_term = short_candidates[:16]
+    # ===== 短期推荐：动量/资金导向 =====
+    short_candidates = []
+    for s in all_stocks:
+        amount = s.get("amount")
+        turnover = s.get("turnover_rate")
+        price = s.get("price")
+        short_total = s["_score_short"].get("total", 0)
+        trend_score = s["_score_short"].get("factors", {}).get("trend", 0)
+        fund_score = s["_score_short"].get("factors", {}).get("fund", 0)
+        # 升级：允许高趋势(>10)+高资金(>14)的标的以稍低总分(>=38)入围
+        if (short_total >= 40
+                and amount is not None and amount > 100_000_000
+                and turnover is not None and turnover > 0
+                and price is not None and price > 0):
+            short_candidates.append(s)
+        elif (short_total >= 38
+                and trend_score >= 10
+                and fund_score >= 14
+                and amount is not None and amount > 100_000_000
+                and turnover is not None and turnover > 0
+                and price is not None and price > 0):
+            short_candidates.append(s)
 
-    # 去重（与长期推荐去重后取前12）
+    short_candidates.sort(
+        key=lambda x: (
+            x["_score_short"].get("total", 0),
+            x["_score_short"].get("factors", {}).get("momentum", 0),
+            x["_score_short"].get("factors", {}).get("fund", 0),
+            float(x.get("turnover_rate") or 0),
+            float(x.get("chg_5d") or 0),
+        ),
+        reverse=True
+    )
+
+    # Phase 2: 对短期top 25拉K线做技术指标评分
+    short_top25 = short_candidates[:25]
+    for s in short_top25:
+        code = s.get("code", "")
+        if code:
+            kl = fetch_kline_for_score(code)
+            if kl:
+                s["_tech"] = compute_tech_factors(kl)
+                s["_score_short"] = score_stock(s, mode="short")
+
+    short_candidates = short_top25
+    short_candidates.sort(
+        key=lambda x: (
+            x["_score_short"].get("total", 0),
+            x["_score_short"].get("factors", {}).get("momentum", 0),
+            x["_score_short"].get("factors", {}).get("fund", 0),
+            float(x.get("turnover_rate") or 0),
+            float(x.get("chg_5d") or 0),
+        ),
+        reverse=True
+    )
+
+    # 去重
     long_codes = {s["code"] for s in long_term}
-    short_term = [s for s in short_term if s["code"] not in long_codes][:12]
+    short_term = [s for s in short_candidates if s["code"] not in long_codes][:12]
 
-    # 为推荐股票计算交易价格建议
+    # 附加交易价格 & 评分（向后兼容）
     for s in long_term:
         s["_trade"] = calc_trade_prices(s)
+        s["_score"] = s["_score_long"].get("total", 0)
     for s in short_term:
         s["_trade"] = calc_trade_prices(s)
+        s["_score"] = s["_score_short"].get("total", 0)
 
     return {
         "long_term": long_term,
